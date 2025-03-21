@@ -1,6 +1,6 @@
 # Workshop: Build Your Own Chatbot
 
-**Version:** 1.1.1
+**Version:** 2.0.0
 
 **Author:** Martin Kovacs 
 **Contact:** martin.kovacs@web.de
