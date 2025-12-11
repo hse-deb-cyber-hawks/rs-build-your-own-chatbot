@@ -19,6 +19,10 @@ from typing import List
 import logging
 import os
 
+from langchain.globals import set_debug
+
+set_debug(True)
+
 # Hint: Use these variables in your tasks
 OLLAMA_HOST_NAME = os.environ.get("OLLAMA_HOST_NAME", "localhost")
 CHROMA_HOST_NAME = os.environ.get("CHROMA_HOST_NAME", "localhost")
@@ -65,17 +69,36 @@ class CustomChatBot:
         
         # Get or create the document collection in ChromaDB
         self.vector_db = self._initialize_vector_db()
+        
+        # --- NEUE AUTOMATISCHE ABFRAGE ---
+        try:
+            # Wir fragen die unterliegende Collection, wie viele Einträge sie hat
+            doc_count = self.vector_db._collection.count()
+            logger.info(f"Current document count in DB: {doc_count}")
 
-        # Process pdf, embedd data and index to ChromaDB
-        if index_data:
-            logger.info(f"Index data to chroma db now.")
+            # Logik: Wenn DB leer ist ODER wir das Neuladen erzwingen wollen
+            if doc_count == 0 or index_data:
+                logger.info(f"Database empty or indexing forced. Indexing data now...")
+                self._index_data_to_vector_db()
+            else:
+                logger.info(f"Database already contains {doc_count} documents. Skipping indexing.")
+                
+        except Exception as e:
+            logger.error(f"Error checking DB count: {e}. Fallback to indexing.")
+            # Falls der Check fehlschlägt, sicherheitshalber indizieren
             self._index_data_to_vector_db()
+        # ----------------------------------
+
+        # # Process pdf, embedd data and index to ChromaDB
+        #if index_data:
+        #    logger.info(f"Index data to chroma db now.")
+        #    self._index_data_to_vector_db()
 
         # Task: Initialize the document retriever
-        self.retriever = self.vector_db.as_retriever(k=3)
+        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 6})
 
         # Task: Initialize the large language model (LLM) from Ollama
-        self.llm = ChatOllama(model=MODEL_NAME, base_url=f"http://{OLLAMA_HOST_NAME}:11434")
+        self.llm = ChatOllama(model=MODEL_NAME, base_url=f"http://{OLLAMA_HOST_NAME}:11434", temperature=0.2)
 
         # Set up the retrieval-augmented generation (RAG) pipeline
         self.qa_rag_chain = self._initialize_qa_rag_chain()
@@ -168,10 +191,44 @@ class CustomChatBot:
         logger.info("Initialize rag chain.")
 
         # Task: Define prompt
-        prompt_template = "You are a helpful assistant and answer questions. If no relevant information is provided or you are unsure of the answer, clearly state that you don’t know." \
-        "Do not use more than 5 sentences for your answers."
-        "**Context:**\n{context}\n\n"
-        "**Question:** {question}"
+        prompt_template = """
+        You are an assistant for question-answering tasks based ONLY on the following context.
+        
+        CRITICAL RULE: Answer in the same language in which the question is asked. 
+        (Example: If Question is English -> Answer English. If Question is German -> Answer German).
+
+        STRATEGY:
+        1. Use ONLY the information in the <context> section below. You are allowed to answer math and general knowledge questions.
+        2. If the answer is not in the context and refers to document content, state clearly in the USER'S LANGUAGE that the information is not in the document.
+        3. Do NOT answer questions about politicians or weather if they are not in the context.
+    
+   
+        <context>
+        {context}
+        </context>
+
+        Frage: {question}
+        """
+        
+        #Du bist ein Assistent für Frage-Antwort-Aufgaben, der NUR auf dem folgenden Kontext basiert.
+        #Du antwortest in der Sprache in der mit dir kommuniziert wird. 
+
+        #STRATEGIE:
+        #1. Nutze NUR die Informationen im Abschnitt <context> unten. Auf mathematische Rechenaufgaben und Allgemeinwissen darfst du antworten.
+        #2. Wenn die Antwort nicht im Kontext steht und sich nicht auf mathematische Rechenaufgaben und Allgemeinwissen bezieht, 
+        #antworte exakt: "Diese Information steht nicht im Dokument, daher kann ich keine Auskunft geben."
+        #3. Beantworte KEINE Fragen zu Politikern oder Wetter oder  wenn sie nicht im Kontext stehen.
+    
+
+        #"""You are a helpful assistant and answer questions. 
+        #If the question is a general knowledge question (like math or greetings), answer it directly.
+        #If the question requires information from the document, use the context provided.
+        #If no relevant information is provided in the context and it's not general knowledge, clearly state that you don’t know.
+        #Do not use more than 5 sentences for your answers.
+        
+        #**Context:** {context}
+        
+        #**Question:** {question}"""
 
         # Task: Initialize prompt langchain prompt template
         rag_prompt = ChatPromptTemplate.from_template(prompt_template)
